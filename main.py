@@ -8,21 +8,15 @@ from llama_index.core import (
 )
 from llama_index.embeddings.openai import OpenAIEmbedding
 from llama_index.llms.openai import OpenAI
+
 from llama_index.core.agent import ReActAgent
+
+import guidance
 from llama_index.core.tools import QueryEngineTool, ToolMetadata
+from llama_index.core.schema import QueryBundle
+from llama_index.question_gen.guidance import GuidanceQuestionGenerator
 
-# Ensure that a question is provided as a command line argument
-if len(sys.argv) < 2:
-    print("Usage: python script.py \"<question>\"")
-    sys.exit(1)
-
-question = sys.argv[1]
-
-# Initialize variables for flow control
-index_loaded = False
-
-def initialize_index():
-    global index_loaded
+def initialize_vector_index():
     try:
         storage_context = StorageContext.from_defaults(persist_dir="./.persist-storage")
         return load_index_from_storage(storage_context), True
@@ -30,7 +24,7 @@ def initialize_index():
         print(f"Error loading index: {e}")
         return None, False
 
-def create_new_index():
+def create_new_vector_index():
     embed_model = OpenAIEmbedding(embed_batch_size=10)
 
     # Set embedding model and language model settings
@@ -40,19 +34,36 @@ def create_new_index():
     # Load documents from a directory into a new VectorStoreIndex
     documents = SimpleDirectoryReader("./data").load_data()
     vector_index = VectorStoreIndex.from_documents(documents)
-    vector_index.storage_context.persist(persist_dir=".persist-storage")
+    vector_index.storage_context.persist(persist_dir="./.persist-storage")
     return vector_index
 
 def query_index(query, vector_index):
     try:
-        query_engine = vector_index.as_query_engine()
-
-        tool_metadata = ToolMetadata(
-            name="My_documents",
-            description="Contains documents about personal finance information from the user",
+        query_tool = QueryEngineTool(
+            query_engine=vector_index.as_query_engine(),
+            metadata=ToolMetadata(
+                name="My_documents",
+                description="Contains documents about personal finance information from the user",
+            )
+        )
+        
+        GuidanceOpenAI = guidance.models.OpenAI(
+            model="gpt-4"
         )
 
-        query_tool = QueryEngineTool(query_engine=query_engine, metadata=tool_metadata)
+        question_gen = GuidanceQuestionGenerator.from_defaults(
+            guidance_llm=GuidanceOpenAI
+        )
+
+        print(question_gen.generate(
+            tools=[
+                ToolMetadata(
+                    name="My_documents",
+                    description="Contains documents about personal finance information from the user",
+                )
+            ],
+            query=QueryBundle(query)
+        ))
 
         base_agent = ReActAgent.from_tools([query_tool], verbose=True)
 
@@ -61,15 +72,28 @@ def query_index(query, vector_index):
     except Exception as e:
         return None, f"Error during completion: {e}"
 
-# Main execution path
-vector_index, index_loaded = initialize_index()
+if __name__ == "__main__":
 
-if not index_loaded:
-    vector_index = create_new_index()
+    
+    # Initialize variables for flow control
+    index_loaded = False
 
-response, error = query_index(question, vector_index)
+    # Main execution path
+    vector_index, index_loaded = initialize_vector_index()
 
-if response is not None:
-    print(str(response))
-else:
-    print(error)
+    # Ensure that a question is provided as a command line argument
+    if len(sys.argv) < 2:
+        print("Usage: python main.py \"<question>\"")
+        sys.exit(1)
+
+    question = sys.argv[1]
+
+    if not index_loaded:
+        vector_index = create_new_vector_index()
+
+    response, error = query_index(question, vector_index)
+
+    if response is not None:
+        print(str(response))
+    else:
+        print(error)
